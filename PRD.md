@@ -38,14 +38,22 @@
 | 백엔드 | **Supabase** (Postgres + REST), 프로젝트 `tetris` (서울 리전) |
 | 클라이언트 | `@supabase/supabase-js` (CDN), publishable 키 사용 |
 
-### 4.1 데이터 모델
-- `scores(id, name, score, lines, level, created_at)`
-- `comments(id, name, body, delete_token, created_at)`
+### 4.1 회원가입 / 로그인 (Supabase Auth)
+- 이메일 + 비밀번호(6자 이상) + 닉네임(2~12자, 한글/영문/숫자/_, 대소문자 무시 중복 불가)
+- 가입 시 `profiles` 행 자동 생성(트리거), 세션은 브라우저에 유지
+- 비로그인: 게임 플레이·리더보드·댓글 조회만 가능
+- 로그인: 점수 저장, 댓글 작성, 본인 댓글 삭제
 
-### 4.2 보안 (RLS)
-- 비로그인(anon) 사용자: 조회·작성만 가능, 직접 수정/삭제 불가
-- 값 검증은 DB CHECK 제약으로 처리(닉네임 1~12자, 댓글 1~200자, 점수 범위)
-- `delete_token`은 컬럼 권한으로 조회 차단, `delete_comment(id, token)` RPC로만 삭제
+### 4.2 데이터 모델
+- `profiles(id → auth.users, nickname, created_at)`
+- `scores(id, user_id, name, score, lines, level, created_at)`
+- `comments(id, user_id, name, body, created_at)`
+- `name`·`user_id`는 DB 트리거가 로그인 사용자 정보로 채움(위조 불가)
+
+### 4.3 보안 (RLS)
+- anon: 조회만 가능
+- authenticated: 본인 명의로만 점수/댓글 작성, 본인 댓글만 삭제
+- 값 검증은 DB CHECK 제약으로 처리(댓글 1~200자, 점수 범위)
 
 ## 5. 비기능 요구사항
 - 모든 사용자가 리더보드·댓글 공유
@@ -54,7 +62,7 @@
 
 ## 6. 범위 외 (향후)
 - 점수 위변조 방지(서버 측 검증), 요청 빈도 제한, 스팸 필터
-- 로그인, 모바일 터치 조작, 홀드 기능, 사운드
+- 소셜 로그인, 비밀번호 재설정, 모바일 터치 조작, 홀드 기능, 사운드
 
 ## 7. 완료 기준
 - 게임이 끝까지 플레이되고 점수가 올바르게 계산됨
