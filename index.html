@@ -45,6 +45,7 @@
   .msg { font-size:13px; min-height:18px; margin:0; }
   .msg.err { color:#f87171; } .msg.ok { color:#4ade80; }
   .hint { font-size:13px; color:var(--muted); margin:0; }
+  .notice { max-width:640px; margin:10px auto 0; padding:10px 14px; border-radius:8px; text-align:center; background:var(--panel); border:1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -53,6 +54,7 @@
   <span id="authGuest"><button class="ghost" data-auth="login">로그인</button> <button class="ghost" data-auth="signup">회원가입</button></span>
   <span id="authUser" class="hidden"><b id="authNick"></b>님 환영합니다 <button class="ghost" id="logoutBtn">로그아웃</button></span>
 </div>
+<p id="notice" class="msg notice hidden"></p>
 <div class="wrap">
   <div class="panel game">
     <canvas id="board" width="300" height="600"></canvas>
@@ -105,8 +107,12 @@
       <input id="aEmail" type="email" placeholder="이메일" autocomplete="email" required>
       <input id="aPass" type="password" placeholder="비밀번호 (6자 이상)" minlength="6" autocomplete="current-password" required>
       <input id="aNick" class="hidden" maxlength="12" placeholder="닉네임 (2~12자, 한글/영문/숫자/_)">
+      <p id="aVerifyHint" class="hint hidden">메일로 받은 인증 코드를 입력하세요.</p>
+      <input id="aCode" class="hidden" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="인증 코드 (숫자)">
       <p id="aMsg" class="msg"></p>
       <button type="submit" id="aSubmit">로그인</button>
+      <button type="button" class="ghost hidden" id="aResend">인증 메일 다시 받기</button>
+      <button type="button" class="link hidden" id="aToVerify" style="font-size:13px">인증 코드 입력하기</button>
       <button type="button" class="ghost" id="aClose">닫기</button>
     </form>
   </div>
@@ -118,6 +124,8 @@
 (() => {
   // ---------- 저장소 (Supabase) ----------
   const { SUPABASE_URL, SUPABASE_KEY } = window.TETRIS_CONFIG;
+  // supabase-js가 URL을 정리하기 전에 인증 리다이렉트 결과를 보관
+  const AUTH_URL_HASH = location.hash.slice(1), AUTH_URL_QUERY = location.search.slice(1);
   const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
   let user = null, nickname = null, scoreSaved = false;
   const fmtDate = t => new Date(t).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' });
@@ -365,22 +373,38 @@
   let authMode = 'login';
   const AUTH_ERRORS = {
     'Invalid login credentials': '이메일 또는 비밀번호가 올바르지 않습니다.',
-    'Email not confirmed': '이메일 인증을 먼저 완료해 주세요. 받은 메일함을 확인하세요.',
+    'Email not confirmed': '이메일 인증이 필요합니다. 메일로 받은 코드를 입력하거나 메일을 다시 받으세요.',
     'User already registered': '이미 가입된 이메일입니다.',
     'Database error saving new user': '이미 사용 중인 닉네임입니다.'
   };
   const authErr = err => AUTH_ERRORS[err.message] || (err.status === 429 ? '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' : err.message);
   const setMsg = (text, ok = false) => { $('aMsg').textContent = text; $('aMsg').className = 'msg' + (text ? (ok ? ' ok' : ' err') : ''); };
 
-  function setAuthMode(mode) {
+  // mode: 'login' | 'signup' | 'verify'(메일로 받은 코드 입력)
+  function setAuthMode(mode, keepMsg = false) {
     authMode = mode;
     document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === mode));
-    const signup = mode === 'signup';
+    const signup = mode === 'signup', verify = mode === 'verify';
     $('aNick').classList.toggle('hidden', !signup); $('aNick').required = signup;
+    $('aPass').classList.toggle('hidden', verify); $('aPass').required = !verify;
     $('aPass').autocomplete = signup ? 'new-password' : 'current-password';
-    $('aSubmit').textContent = signup ? '회원가입' : '로그인';
-    setMsg('');
+    $('aCode').classList.toggle('hidden', !verify); $('aCode').required = verify;
+    $('aVerifyHint').classList.toggle('hidden', !verify);
+    $('aResend').classList.toggle('hidden', !verify);
+    $('aToVerify').classList.toggle('hidden', mode !== 'login');
+    $('aSubmit').textContent = verify ? '인증하기' : signup ? '회원가입' : '로그인';
+    if (!keepMsg) setMsg('');
+    if (verify) setTimeout(() => $('aCode').focus(), 0);
   }
+  $('aToVerify').addEventListener('click', () => setAuthMode('verify'));
+  $('aResend').addEventListener('click', async () => {
+    const email = $('aEmail').value.trim();
+    if (!email) return setMsg('이메일을 입력해 주세요.');
+    const btn = $('aResend'); btn.disabled = true;
+    const { error } = await sb.auth.resend({ type: 'signup', email, options: { emailRedirectTo: location.origin + location.pathname } });
+    btn.disabled = false;
+    setMsg(error ? authErr(error) : '인증 메일을 다시 보냈습니다. 메일함을 확인해 주세요.', !error);
+  });
   function openAuth(mode) {
     if (state === 'play') pause();
     setAuthMode(mode);
@@ -410,11 +434,24 @@
         });
         if (error) return setMsg(authErr(error));
         if (data.user && data.user.identities?.length === 0) return setMsg('이미 가입된 이메일입니다.');
-        if (!data.session) return setMsg('가입 완료! 인증 메일의 링크를 누른 뒤 로그인해 주세요.', true);
+        if (!data.session) {
+          setAuthMode('verify', true);
+          return setMsg('가입 완료! 메일로 받은 인증 코드를 입력하거나, 메일의 링크를 눌러 주세요.', true);
+        }
         closeAuth();
+      } else if (authMode === 'verify') {
+        const token = $('aCode').value.replace(/\D/g, '');
+        if (token.length < 6) return setMsg('인증 코드를 정확히 입력해 주세요.');
+        let { error } = await sb.auth.verifyOtp({ email, token, type: 'signup' });
+        if (error) ({ error } = await sb.auth.verifyOtp({ email, token, type: 'email' }));
+        if (error) return setMsg('코드가 올바르지 않거나 만료되었습니다. 이미 인증했다면 로그인해 보세요.');
+        closeAuth(); showNotice('이메일 인증 완료! 로그인되었습니다.', true);
       } else {
         const { error } = await sb.auth.signInWithPassword({ email, password });
-        if (error) return setMsg(authErr(error));
+        if (error) {
+          if (error.message === 'Email not confirmed') { setAuthMode('verify', true); }
+          return setMsg(authErr(error));
+        }
         closeAuth();
       }
     } finally { btn.disabled = false; }
@@ -440,6 +477,24 @@
   }
   // onAuthStateChange 콜백 안에서 await하면 교착될 수 있어 setTimeout으로 분리
   sb.auth.onAuthStateChange((_event, session) => { setTimeout(() => applySession(session), 0); });
+
+  // ---------- 인증 메일 링크로 돌아왔을 때 결과 안내 ----------
+  function showNotice(text, ok) {
+    const n = $('notice'); n.textContent = text; n.className = 'msg notice ' + (ok ? 'ok' : 'err');
+    clearTimeout(showNotice.t); showNotice.t = setTimeout(() => n.classList.add('hidden'), 8000);
+  }
+  (function handleAuthRedirect() {
+    const p = new URLSearchParams(AUTH_URL_HASH + '&' + AUTH_URL_QUERY);
+    const errCode = p.get('error_code') || p.get('error');
+    if (errCode) {
+      showNotice(errCode === 'otp_expired'
+        ? '인증 링크가 만료되었거나 이미 사용되었습니다. 이미 인증했다면 로그인하고, 아니면 로그인 창에서 "인증 메일 다시 받기"를 눌러 주세요.'
+        : '인증에 실패했습니다: ' + (p.get('error_description') || errCode), false);
+      history.replaceState(null, '', location.pathname);
+    } else if (p.get('access_token') || p.get('code')) {
+      showNotice(p.get('type') === 'recovery' ? '로그인되었습니다.' : '이메일 인증 완료! 로그인되었습니다.', true);
+    }
+  })();
 
   // ---------- 초기화 ----------
   board = newBoard(); bag = []; nextType = drawType();
